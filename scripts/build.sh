@@ -51,13 +51,23 @@ if [[ -z "$SRC_DEB" ]]; then
 fi
 echo "Downloaded upstream package: $(basename "$SRC_DEB")"
 
-# --- 4. Produce a renamed copy per distribution -----------------------------
+# --- 4. Repackage per distribution with a suite-suffixed Version -----------
+# Unpack the upstream .deb, rewrite the control Version to
+# "<ver>-1~<distro>" and repack. The "~<distro>" suffix makes apt order the
+# packages correctly per suite (this is what apt actually reads, not the
+# file name). The on-disk file name keeps the "~"; GitHub rewrites it to a
+# "." on release assets, which is a cosmetic GitHub limitation only.
 mkdir -p "$WORKDIR/out"
 for distro in "${DISTROS[@]}"; do
-  # e.g. zapzap_7.0.3-1~bookworm_amd64.deb
-  out="$WORKDIR/out/zapzap_${VERSION}-1~${distro}_amd64.deb"
-  cp "$SRC_DEB" "$out"
-  echo "  -> $(basename "$out")"
+  pkgver="${VERSION}-1~${distro}"
+  extract="$WORKDIR/pkg-${distro}"
+  rm -rf "$extract"
+  dpkg-deb -R "$SRC_DEB" "$extract"
+  sed -i "s/^Version:.*/Version: ${pkgver}/" "$extract/DEBIAN/control"
+
+  out="$WORKDIR/out/zapzap_${pkgver}_amd64.deb"   # zapzap_7.0.3-1~bookworm_amd64.deb
+  dpkg-deb --build --root-owner-group "$extract" "$out"
+  echo "  -> $(basename "$out")  (Version: ${pkgver})"
 done
 
 # --- 5. Publish the release -------------------------------------------------
