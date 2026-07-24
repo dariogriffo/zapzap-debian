@@ -16,8 +16,21 @@ set -euo pipefail
 UPSTREAM_REPO="rafatosta/zapzap"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Target Debian/Ubuntu suites.
-DISTROS=(bookworm trixie forky sid questing resolute noble jammy)
+# Target suites. Ubuntu binary .debs get a "_ubu" filename suffix (matching
+# the convention used across the apt repo tooling) so Debian and Ubuntu
+# builds never collide; the internal control Version is "<ver>-1~<distro>"
+# for both.
+DEBIAN_DISTROS=(bookworm trixie forky sid)
+UBUNTU_DISTROS=(jammy noble questing resolute)
+DISTROS=("${DEBIAN_DISTROS[@]}" "${UBUNTU_DISTROS[@]}")
+
+# Echo "_ubu" for Ubuntu suites, empty otherwise.
+ubu_suffix() {
+  local d
+  for d in "${UBUNTU_DISTROS[@]}"; do
+    [[ "$d" == "$1" ]] && { printf '_ubu'; return; }
+  done
+}
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -73,7 +86,9 @@ for distro in "${DISTROS[@]}"; do
   dpkg-deb -R "$SRC_DEB" "$extract"
   sed -i "s/^Version:.*/Version: ${pkgver}/" "$extract/DEBIAN/control"
 
-  fname="zapzap_${pkgver}_amd64.deb"   # zapzap_7.0.3-1~bookworm_amd64.deb
+  # Debian: zapzap_7.0.3-1~bookworm_amd64.deb
+  # Ubuntu: zapzap_7.0.3-1~jammy_amd64_ubu.deb
+  fname="zapzap_${pkgver}_amd64$(ubu_suffix "$distro").deb"
   out="$WORKDIR/out/$fname"
   dpkg-deb --build --root-owner-group "$extract" "$out"
   assets+=("${out}#${fname}")          # path#label -> label keeps the "~"
