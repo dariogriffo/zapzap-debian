@@ -54,10 +54,13 @@ echo "Downloaded upstream package: $(basename "$SRC_DEB")"
 # --- 4. Repackage per distribution with a suite-suffixed Version -----------
 # Unpack the upstream .deb, rewrite the control Version to
 # "<ver>-1~<distro>" and repack. The "~<distro>" suffix makes apt order the
-# packages correctly per suite (this is what apt actually reads, not the
-# file name). The on-disk file name keeps the "~"; GitHub rewrites it to a
-# "." on release assets, which is a cosmetic GitHub limitation only.
+# packages correctly per suite (this is what apt actually reads).
+#
+# Note on the "~": GitHub sanitises the asset *name* to "." on upload, but it
+# displays the asset *label* verbatim. We build each upload argument as
+# "<path>#<label>" so the release page shows the real "~" file name.
 mkdir -p "$WORKDIR/out"
+assets=()
 for distro in "${DISTROS[@]}"; do
   pkgver="${VERSION}-1~${distro}"
   extract="$WORKDIR/pkg-${distro}"
@@ -65,13 +68,15 @@ for distro in "${DISTROS[@]}"; do
   dpkg-deb -R "$SRC_DEB" "$extract"
   sed -i "s/^Version:.*/Version: ${pkgver}/" "$extract/DEBIAN/control"
 
-  out="$WORKDIR/out/zapzap_${pkgver}_amd64.deb"   # zapzap_7.0.3-1~bookworm_amd64.deb
+  fname="zapzap_${pkgver}_amd64.deb"   # zapzap_7.0.3-1~bookworm_amd64.deb
+  out="$WORKDIR/out/$fname"
   dpkg-deb --build --root-owner-group "$extract" "$out"
-  echo "  -> $(basename "$out")  (Version: ${pkgver})"
+  assets+=("${out}#${fname}")          # path#label -> label keeps the "~"
+  echo "  -> ${fname}  (Version: ${pkgver})"
 done
 
 # --- 5. Publish the release -------------------------------------------------
-gh release create "$RELEASE_TAG" "$WORKDIR"/out/*.deb \
+gh release create "$RELEASE_TAG" "${assets[@]}" \
   --title "$RELEASE_TAG" \
   --notes "Repackaged ZapZap **$VERSION** for Debian/Ubuntu suites: ${DISTROS[*]}.
 
