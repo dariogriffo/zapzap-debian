@@ -1,0 +1,29 @@
+#!/usr/bin/make -f
+
+# ZapZap is a pure-Python (PyQt6) application. Upstream ships it as a
+# self-contained tree under /usr/share/zapzap with a small launcher in
+# /usr/bin. We reproduce that exact layout here so the source package builds
+# a binary identical to upstream's .deb.
+
+%:
+	dh $@
+
+# Nothing to compile / configure / test for a pure-Python tree.
+override_dh_auto_configure:
+override_dh_auto_build:
+override_dh_auto_test:
+override_dh_auto_clean:
+
+override_dh_auto_install:
+	install -d debian/zapzap/usr/share/zapzap
+	cp -r zapzap LICENSE README.md requirements.txt pyproject.toml \
+		debian/zapzap/usr/share/zapzap/
+	find debian/zapzap/usr/share/zapzap -name '__pycache__' -type d -prune \
+		-exec rm -rf {} + 2>/dev/null || true
+	install -Dm0755 debian/launcher debian/zapzap/usr/bin/zapzap
+	install -Dm0644 share/applications/com.rtosta.zapzap.desktop \
+		debian/zapzap/usr/share/applications/com.rtosta.zapzap.desktop
+	install -Dm0644 share/icons/com.rtosta.zapzap.svg \
+		debian/zapzap/usr/share/icons/hicolor/scalable/apps/com.rtosta.zapzap.svg
+	install -Dm0644 share/metainfo/com.rtosta.zapzap.appdata.xml \
+		debian/zapzap/usr/share/metainfo/com.rtosta.zapzap.appdata.xml

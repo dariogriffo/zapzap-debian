@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 #
 # Checks for a new stable ZapZap release. If one is found that has not yet
-# been mirrored here, downloads the upstream amd64 .deb, produces a renamed
-# copy for each target Debian/Ubuntu distribution and publishes a GitHub
-# release tagged "<version>+1".
+# been mirrored here, it:
+#   * downloads the upstream amd64 .deb and repackages it, per target suite,
+#     with a suite-suffixed control Version ("<ver>-1~<distro>");
+#   * builds a Debian source package (.dsc + .orig.tar.gz + .debian.tar.xz)
+#     per suite from the upstream sources, so we distribute the corresponding
+#     source alongside the binaries (GPL-3 compliance);
+#   * publishes everything in a GitHub release tagged "<version>+1".
 #
-# Requirements: gh (authenticated via GH_TOKEN), curl.
+# Requirements: gh (authenticated via GH_TOKEN), curl, dpkg-deb, dpkg-source.
 
 set -euo pipefail
 
 UPSTREAM_REPO="rafatosta/zapzap"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Target Debian/Ubuntu suites.
 DISTROS=(bookworm trixie forky sid questing resolute noble jammy)
@@ -75,10 +80,49 @@ for distro in "${DISTROS[@]}"; do
   echo "  -> ${fname}  (Version: ${pkgver})"
 done
 
+# --- 4b. Build source packages (GPL-3 source distribution) -----------------
+# Download the upstream source tarball once as the shared .orig.tar.gz, then
+# produce a source package (.dsc + .debian.tar.xz) per suite by dropping in
+# our debian/ dir with a suite-specific changelog. This ships the
+# corresponding source for the binaries above, as required by the GPL.
+SRCDIR="$WORKDIR/src-pkg"
+mkdir -p "$SRCDIR"
+ORIG_TARBALL="$SRCDIR/zapzap_${VERSION}.orig.tar.gz"
+curl -fsSL "https://github.com/$UPSTREAM_REPO/archive/refs/tags/${VERSION}.tar.gz" \
+  -o "$ORIG_TARBALL"
+
+for distro in "${DISTROS[@]}"; do
+  pkgver="${VERSION}-1~${distro}"
+  builddir="$SRCDIR/zapzap-${VERSION}"
+  rm -rf "$builddir"
+  tar -xzf "$ORIG_TARBALL" -C "$SRCDIR"   # extracts to zapzap-<version>/
+  cp -r "$REPO_ROOT/debian" "$builddir/debian"
+
+  cat > "$builddir/debian/changelog" <<EOF
+zapzap (${pkgver}) ${distro}; urgency=medium
+
+  * Repackage of upstream ZapZap ${VERSION} for ${distro}.
+
+ -- Dario Griffo <dariogriffo@gmail.com>  $(date -R)
+EOF
+
+  ( cd "$SRCDIR" && dpkg-source --build "zapzap-${VERSION}" )
+  echo "  -> zapzap_${pkgver}.dsc (+ .debian.tar.xz)"
+done
+rm -rf "$SRCDIR/zapzap-${VERSION}"
+
+# Add the generated source artifacts (with "~"-preserving labels) to the
+# upload set. The shared .orig.tar.gz is published once.
+for f in "$SRCDIR"/*.dsc "$SRCDIR"/*.debian.tar.xz "$ORIG_TARBALL"; do
+  assets+=("${f}#$(basename "$f")")
+done
+
 # --- 5. Publish the release -------------------------------------------------
 gh release create "$RELEASE_TAG" "${assets[@]}" \
   --title "$RELEASE_TAG" \
   --notes "Repackaged ZapZap **$VERSION** for Debian/Ubuntu suites: ${DISTROS[*]}.
+
+Includes the corresponding Debian source packages (.dsc / .orig.tar.gz / .debian.tar.xz) for GPL-3 compliance.
 
 Based on upstream release [$VERSION](https://github.com/$UPSTREAM_REPO/releases/tag/$VERSION)."
 

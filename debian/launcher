@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -e
+
+cd /usr/share/zapzap
+exec python3 -m zapzap "$@"
