@@ -24,12 +24,14 @@ DEBIAN_DISTROS=(bookworm trixie forky sid)
 UBUNTU_DISTROS=(jammy noble questing resolute)
 DISTROS=("${DEBIAN_DISTROS[@]}" "${UBUNTU_DISTROS[@]}")
 
-# Echo "_ubu" for Ubuntu suites, empty otherwise.
+# Echo "_ubu" for Ubuntu suites, empty otherwise. Always returns 0 so it is
+# safe inside a command substitution under `set -e`.
 ubu_suffix() {
   local d
   for d in "${UBUNTU_DISTROS[@]}"; do
-    [[ "$d" == "$1" ]] && { printf '_ubu'; return; }
+    if [[ "$d" == "$1" ]]; then printf '_ubu'; return 0; fi
   done
+  return 0
 }
 
 WORKDIR="$(mktemp -d)"
