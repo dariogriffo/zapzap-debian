@@ -3,13 +3,14 @@
 # Checks for a new stable ZapZap release. If one is found that has not yet
 # been mirrored here, it:
 #   * downloads the upstream amd64 .deb and repackages it, per target suite,
-#     with a suite-suffixed control Version ("<ver>-1~<distro>");
+#     with a suite-suffixed control Version ("<ver>-1~<distro>") and
+#     Architecture: all, since the payload is pure Python;
 #   * builds a Debian source package (.dsc + .orig.tar.gz + .debian.tar.xz)
 #     per suite from the upstream sources, so we distribute the corresponding
 #     source alongside the binaries (GPL-3 compliance);
 #   * publishes everything in a GitHub release tagged "<version>+1".
 #
-# Requirements: gh (authenticated via GH_TOKEN), curl, dpkg-deb, dpkg-source.
+# Requirements: gh (authenticated via GH_TOKEN), curl, file, dpkg-deb, dpkg-source.
 
 set -euo pipefail
 
@@ -57,7 +58,12 @@ if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
   exit 0
 fi
 
-# --- 3. Download the upstream amd64 .deb ------------------------------------
+# --- 3. Download the upstream .deb ------------------------------------------
+# Upstream builds only an amd64 .deb, but ZapZap is a pure-Python (PyQt6)
+# application: the package contains no compiled code, and everything
+# architecture-specific comes from the distribution's own python3-pyqt6
+# packages. The repackaged .deb is therefore published as Architecture: all,
+# which installs on arm64 and every other port as well.
 mkdir -p "$WORKDIR/src"
 gh release download "$VERSION" \
   --repo "$UPSTREAM_REPO" \
@@ -87,10 +93,17 @@ for distro in "${DISTROS[@]}"; do
   rm -rf "$extract"
   dpkg-deb -R "$SRC_DEB" "$extract"
   sed -i "s/^Version:.*/Version: ${pkgver}/" "$extract/DEBIAN/control"
+  sed -i "s/^Architecture:.*/Architecture: all/" "$extract/DEBIAN/control"
 
-  # Debian: zapzap_7.0.3-1~bookworm_amd64.deb
-  # Ubuntu: zapzap_7.0.3-1~jammy_amd64_ubu.deb
-  fname="zapzap_${pkgver}_amd64$(ubu_suffix "$distro").deb"
+  # Refuse to relabel a package that turns out to contain compiled code.
+  if find "$extract" -type f -exec file -b {} + | grep -q '^ELF '; then
+    echo "::error::Upstream .deb contains ELF binaries; it is not Architecture: all." >&2
+    exit 1
+  fi
+
+  # Debian: zapzap_7.0.3-1~bookworm_all.deb
+  # Ubuntu: zapzap_7.0.3-1~jammy_all_ubu.deb
+  fname="zapzap_${pkgver}_all$(ubu_suffix "$distro").deb"
   out="$WORKDIR/out/$fname"
   dpkg-deb --build --root-owner-group "$extract" "$out"
   assets+=("${out}#${fname}")          # path#label -> label keeps the "~"
