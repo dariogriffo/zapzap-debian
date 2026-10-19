@@ -4,7 +4,12 @@ on:
   schedule:
     # Every day at 06:00 UTC.
     - cron: "0 6 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      build_version:
+        description: Build number; bump it to rebuild the latest upstream version.
+        type: string
+        default: '1'
 
 permissions:
   contents: write
@@ -26,4 +31,4 @@ jobs:
       - name: Check for new ZapZap release and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash scripts/build.sh
+        run: bash scripts/build.sh ${{ inputs.build_version || '1' }}

@@ -2,13 +2,16 @@
 #
 # Checks for a new stable ZapZap release. If one is found that has not yet
 # been mirrored here, it:
-#   * downloads the upstream amd64 .deb and repackages it, per target suite,
-#     with a suite-suffixed control Version ("<ver>-1~<distro>") and
-#     Architecture: all, since the payload is pure Python;
-#   * builds a Debian source package (.dsc + .orig.tar.gz + .debian.tar.xz)
-#     per suite from the upstream sources, so we distribute the corresponding
-#     source alongside the binaries (GPL-3 compliance);
-#   * publishes everything in a GitHub release tagged "<version>+1".
+#   * downloads the upstream amd64 .deb and repackages it once, with control
+#     Version "<ver>-<build>~griffo" and Architecture: all, since the payload
+#     is pure Python; the mirror links that one file into every suite;
+#   * builds one Debian source package (.dsc + .orig.tar.gz + .debian.tar.xz)
+#     from the upstream sources, so we distribute the corresponding source
+#     alongside the binary (GPL-3 compliance);
+#   * publishes everything in a GitHub release tagged "<version>+<build>".
+#
+#   scripts/build.sh [build]    # build defaults to 1; a +N bump rebuilds the
+#                               # latest upstream version under a new tag
 #
 # Requirements: gh (authenticated via GH_TOKEN), curl, file, dpkg-deb, dpkg-source.
 
@@ -16,24 +19,7 @@ set -euo pipefail
 
 UPSTREAM_REPO="rafatosta/zapzap"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-# Target suites. Ubuntu binary .debs get a "_ubu" filename suffix (matching
-# the convention used across the apt repo tooling) so Debian and Ubuntu
-# builds never collide; the internal control Version is "<ver>-1~<distro>"
-# for both.
-DEBIAN_DISTROS=(bookworm trixie forky sid)
-UBUNTU_DISTROS=(jammy noble questing resolute)
-DISTROS=("${DEBIAN_DISTROS[@]}" "${UBUNTU_DISTROS[@]}")
-
-# Echo "_ubu" for Ubuntu suites, empty otherwise. Always returns 0 so it is
-# safe inside a command substitution under `set -e`.
-ubu_suffix() {
-  local d
-  for d in "${UBUNTU_DISTROS[@]}"; do
-    if [[ "$d" == "$1" ]]; then printf '_ubu'; return 0; fi
-  done
-  return 0
-}
+BUILD_VERSION="${1:-1}"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -49,7 +35,7 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
-RELEASE_TAG="${VERSION}+1"
+RELEASE_TAG="${VERSION}+${BUILD_VERSION}"
 echo "Latest upstream stable version: $VERSION (target release tag: $RELEASE_TAG)"
 
 # --- 2. Skip if we already published this version ---------------------------
@@ -77,68 +63,75 @@ if [[ -z "$SRC_DEB" ]]; then
 fi
 echo "Downloaded upstream package: $(basename "$SRC_DEB")"
 
-# --- 4. Repackage per distribution with a suite-suffixed Version -----------
+# --- 4. Repackage once, for every suite ------------------------------------
 # Unpack the upstream .deb, rewrite the control Version to
-# "<ver>-1~<distro>" and repack. The "~<distro>" suffix makes apt order the
-# packages correctly per suite (this is what apt actually reads).
+# "<ver>-<build>~griffo" and repack. The payload is the same for every suite,
+# so one package serves them all; the "~" keeps it below the distro's own
+# build of the same version.
 #
 # Note on the "~": GitHub sanitises the asset *name* to "." on upload, but it
 # displays the asset *label* verbatim. We build each upload argument as
 # "<path>#<label>" so the release page shows the real "~" file name.
 mkdir -p "$WORKDIR/out"
 assets=()
-for distro in "${DISTROS[@]}"; do
-  pkgver="${VERSION}-1~${distro}"
-  extract="$WORKDIR/pkg-${distro}"
-  rm -rf "$extract"
-  dpkg-deb -R "$SRC_DEB" "$extract"
-  sed -i "s/^Version:.*/Version: ${pkgver}/" "$extract/DEBIAN/control"
-  sed -i "s/^Architecture:.*/Architecture: all/" "$extract/DEBIAN/control"
+pkgver="${VERSION}-${BUILD_VERSION}~griffo"
+extract="$WORKDIR/pkg"
+rm -rf "$extract"
+dpkg-deb -R "$SRC_DEB" "$extract"
+sed -i "s/^Version:.*/Version: ${pkgver}/" "$extract/DEBIAN/control"
+sed -i "s/^Architecture:.*/Architecture: all/" "$extract/DEBIAN/control"
 
-  # Refuse to relabel a package that turns out to contain compiled code.
-  if find "$extract" -type f -exec file -b {} + | grep -q '^ELF '; then
-    echo "::error::Upstream .deb contains ELF binaries; it is not Architecture: all." >&2
-    exit 1
-  fi
+# Refuse to relabel a package that turns out to contain compiled code.
+if find "$extract" -type f -exec file -b {} + | grep -q '^ELF '; then
+  echo "::error::Upstream .deb contains ELF binaries; it is not Architecture: all." >&2
+  exit 1
+fi
 
-  # Debian: zapzap_7.0.3-1~bookworm_all.deb
-  # Ubuntu: zapzap_7.0.3-1~jammy_all_ubu.deb
-  fname="zapzap_${pkgver}_all$(ubu_suffix "$distro").deb"
-  out="$WORKDIR/out/$fname"
-  dpkg-deb --build --root-owner-group "$extract" "$out"
-  assets+=("${out}#${fname}")          # path#label -> label keeps the "~"
-  echo "  -> ${fname}  (Version: ${pkgver})"
-done
+# zapzap_7.0.3-1~griffo_all.deb
+fname="zapzap_${pkgver}_all.deb"
+out="$WORKDIR/out/$fname"
+dpkg-deb -Zxz --build --root-owner-group "$extract" "$out"
+assets+=("${out}#${fname}")          # path#label -> label keeps the "~"
+echo "  -> ${fname}  (Version: ${pkgver})"
 
-# --- 4b. Build source packages (GPL-3 source distribution) -----------------
-# Download the upstream source tarball once as the shared .orig.tar.gz, then
-# produce a source package (.dsc + .debian.tar.xz) per suite by dropping in
-# our debian/ dir with a suite-specific changelog. This ships the
-# corresponding source for the binaries above, as required by the GPL.
+# --- 4b. Build the source package (GPL-3 source distribution) -------------
+# Use the upstream source tarball as the .orig.tar.gz and produce one source
+# package (.dsc + .debian.tar.xz) by dropping in our debian/ dir. This ships
+# the corresponding source for the binary above, as required by the GPL.
 SRCDIR="$WORKDIR/src-pkg"
 mkdir -p "$SRCDIR"
 ORIG_TARBALL="$SRCDIR/zapzap_${VERSION}.orig.tar.gz"
-curl -fsSL "https://github.com/$UPSTREAM_REPO/archive/refs/tags/${VERSION}.tar.gz" \
-  -o "$ORIG_TARBALL"
 
-for distro in "${DISTROS[@]}"; do
-  pkgver="${VERSION}-1~${distro}"
-  builddir="$SRCDIR/zapzap-${VERSION}"
-  rm -rf "$builddir"
-  tar -xzf "$ORIG_TARBALL" -C "$SRCDIR"   # extracts to zapzap-<version>/
-  cp -r "$REPO_ROOT/debian" "$builddir/debian"
+# A rebuild of an upstream version already released here (a +N build bump)
+# must ship the very same orig tarball: the pool holds one per upstream
+# version and reprepro refuses a different one, and nothing guarantees the
+# archive download is byte-identical next time. Reuse the earlier release's copy.
+for ((b = BUILD_VERSION - 1; b >= 1; b--)); do
+  if gh release download "${VERSION}+${b}" --pattern "zapzap_${VERSION}.orig.tar.gz" --dir "$SRCDIR" 2>/dev/null; then
+    echo "  Reusing zapzap_${VERSION}.orig.tar.gz from release ${VERSION}+${b}"
+    break
+  fi
+done
+if [[ ! -f "$ORIG_TARBALL" ]]; then
+  curl -fsSL "https://github.com/$UPSTREAM_REPO/archive/refs/tags/${VERSION}.tar.gz" \
+    -o "$ORIG_TARBALL"
+fi
 
-  cat > "$builddir/debian/changelog" <<EOF
-zapzap (${pkgver}) ${distro}; urgency=medium
+builddir="$SRCDIR/zapzap-${VERSION}"
+rm -rf "$builddir"
+tar -xzf "$ORIG_TARBALL" -C "$SRCDIR"   # extracts to zapzap-<version>/
+cp -r "$REPO_ROOT/debian" "$builddir/debian"
 
-  * Repackage of upstream ZapZap ${VERSION} for ${distro}.
+cat > "$builddir/debian/changelog" <<EOF
+zapzap (${pkgver}) stable; urgency=medium
+
+  * Repackage of upstream ZapZap ${VERSION}.
 
  -- Dario Griffo <dariogriffo@gmail.com>  $(date -R)
 EOF
 
-  ( cd "$SRCDIR" && dpkg-source --build "zapzap-${VERSION}" )
-  echo "  -> zapzap_${pkgver}.dsc (+ .debian.tar.xz)"
-done
+( cd "$SRCDIR" && dpkg-source --build "zapzap-${VERSION}" )
+echo "  -> zapzap_${pkgver}.dsc (+ .debian.tar.xz)"
 rm -rf "$SRCDIR/zapzap-${VERSION}"
 
 # Add the generated source artifacts (with "~"-preserving labels) to the
@@ -150,7 +143,7 @@ done
 # --- 5. Publish the release -------------------------------------------------
 gh release create "$RELEASE_TAG" "${assets[@]}" \
   --title "$RELEASE_TAG" \
-  --notes "Repackaged ZapZap **$VERSION** for Debian/Ubuntu suites: ${DISTROS[*]}.
+  --notes "Repackaged ZapZap **$VERSION** for every Debian and Ubuntu suite.
 
 Includes the corresponding Debian source packages (.dsc / .orig.tar.gz / .debian.tar.xz) for GPL-3 compliance.
 

@@ -1,5 +1,5 @@
 zapzap (0.0.0-1) UNRELEASED; urgency=medium
 
-  * Placeholder changelog - overwritten by scripts/build.sh per distribution.
+  * Placeholder changelog - overwritten by scripts/build.sh.
 
  -- Dario Griffo <dariogriffo@gmail.com>  Mon, 01 Jan 2024 00:00:00 +0000
